@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-#pylint: disable = C0301
+# pylint: disable = C0301
 
 """
     simple script to delete files from your slack account
@@ -27,14 +27,101 @@ import json
 import unicodedata
 import requests
 
-_AGING = 350
-_TOKEN = ""
-_SLACKDOMAIN = ""
-_SLACKFILELIST = "https://slack.com/api/files.list"
-_SLACKDELETEFILE = ".slack.com/api/files.delete?t="
-_HTTPSTRING = "https://"
-#_FILETYPE = {"text", "jpg", "png", "pptx", "doc", "pdf"}
-_FILETYPE = {}
+
+class SlackConfig(object):
+    """
+    this class configures parameters of this scipt
+    - connection details
+    - mode of operation of this script
+    """
+    aging = 360
+    slack_file_list = "https://slack.com/api/files.list"
+    slack_delete_file = ".slack.com/api/files.delete?t="
+    http_string = "https://"
+    file_type = {}
+    # file_type = {"text", "jpg", "png", "pptx", "doc", "pdf"}
+    proxies = {}
+    token = ""
+    slack_domain = ""
+
+
+    def __init__(self):
+        pass
+
+    def config_check(self):
+        """
+        this function verifies if the script is configured in appropriate way
+        :return:
+        True if all the parameters are ok and False otherwise
+        """
+
+        def message(parameter_string):
+            """
+            simple function to display error messages
+            :type parameter_string: string
+            :param parameter_string:
+            parameter string to use in error message
+            :return:
+            error string
+            """
+            return "Configure {} parameter in appropriate way.".format(parameter_string)
+
+        if self.aging <= 1:
+            print message("aging")
+            return False
+        if self.token == "":
+            print message("token")
+            return False
+        if self.slack_domain == "":
+            print message("slack_domain")
+            return False
+        self.config_info()
+        return True
+
+    def config_info(self):
+        """
+        print general info about configuration
+        :return: no value returned
+        """
+        if len(self.file_type) == 0:
+            print "Deleting all file types."
+        else:
+            print "Deleting select file types: {}".format(self.file_type)
+        print "Deleting files older than {} days\n".format(self.aging - 1)
+        print "Using following proxy config: {}".format(self.proxies)
+        print "(empty proxy list means: no proxy)"
+
+def send_request_post(slackcfg, request_url, request_data):
+    """
+    this function is a wrapper around requests.post method
+    :param slackcfg: reference to object of SlackConfig class
+    :param request_url: URL to the Web method that should be called
+    :param request_data: data associated with a Web method call
+    :return:
+    Response object returned by requests.post call.
+    More on Response object - http://docs.python-requests.org/en/master/api/#requests.Response
+    """
+    response = None
+    try_without_proxy = False
+
+    try:
+        response = requests.post(request_url, data=request_data, proxies=slackcfg.proxies)
+    except requests.exceptions.RequestException as exception_msg:
+        try_without_proxy = True
+
+    if try_without_proxy:
+        try:
+            response = requests.post(request_url, data=request_data)
+        except requests.exceptions.RequestException as exception_msg:
+            print "Error connecting to {}.".format(request_url)
+            print "Take a look on error details below..."
+            print exception_msg
+            sys.exit(1)
+        finally:
+            pass
+
+    return response
+
 
 def interpret_slack_response(response):
     """
@@ -46,25 +133,29 @@ def interpret_slack_response(response):
         this function will inte
     """
 
-    resultstring = None
-    resultboolean = True
+    result_boolean = True
     response_dict = json.loads(response._content)
 
+    #
+    #print "Chunks:"
     #for chunk in response.iter_content(chunk_size=128):
     #    print chunk
 
     if not response.ok:
-        resultstring = "Got error from the Web Service. Take a look on the error.\n"
-        resultstring += response._content
+        result_string = "Got error from the Web Service. Take a look on the error.\n"
+        result_string += response._content
+        result_boolean = False
     else:
         if response_dict["ok"]:
-            resultstring = "Operation successful."
+            result_string = "Operation successful."
         else:
-            resultstring = "Got error from the Web Service. Take a look on the error.\n"
-            resultstring += response._content
-    return resultboolean, resultstring
+            result_string = "Got error from the Web Service. Take a look on the error.\n"
+            result_string += response._content
+            result_boolean = False
+    return result_boolean, result_string
 
-def delete_files_on_slack():
+
+def delete_files_on_slack(slackcfg):
     """
         this function deletes files on slack
         in a loop it calls Slack WEB API to get a list of available files
@@ -76,11 +167,11 @@ def delete_files_on_slack():
     """
 
     while 1:
-        files_list_url = _SLACKFILELIST
-        date = str(calendar.timegm((datetime.now() + timedelta(-_AGING)).utctimetuple()))
-        data = {"token": _TOKEN, "ts_to": date}
+        files_list_url = slackcfg.slack_file_list
+        date = str(calendar.timegm((datetime.now() + timedelta(-slackcfg.aging)).utctimetuple()))
+        data = {"token": slackcfg.token, "ts_to": date}
         try:
-            response = requests.post(files_list_url, data=data)
+            response = send_request_post(slackcfg=slackcfg, request_url=files_list_url, request_data=data)
         except requests.exceptions.RequestException as exception_msg:
             print "Error connecting to {}.".format(files_list_url)
             print "Take a look on error details below..."
@@ -93,11 +184,12 @@ def delete_files_on_slack():
             print "No files to delete."
             break
         for file_to_delete in response.json()["files"]:
-
-            #print file_to_delete["filetype"]
-            if len(_FILETYPE) == 0 or file_to_delete["filetype"] in _FILETYPE:
+            #
+            # print file_to_delete["filetype"]
+            if len(slackcfg.file_type) == 0 or file_to_delete["filetype"] in slackcfg.file_type:
                 pass
             else:
+                #
                 #file_name = unicodedata.normalize('NFKD', file_to_delete["name"]).encode('ascii', 'ignore')
                 #print "File type is different from configuration {}".format(file_name)
                 continue
@@ -109,11 +201,15 @@ def delete_files_on_slack():
                 file_name = unicodedata.normalize('NFKD', file_to_delete["name"]).encode('ascii', 'ignore')
                 print u"Deleting file \"{0}\" (file id: {1})..." \
                     .format(file_name, file_to_delete["id"])
+            except UnicodeEncodeError as exception_msg:
+                file_name = unicodedata.normalize('NFKD', file_to_delete["name"]).encode('ascii', 'ignore')
+                print u"Deleting file \"{0}\" (file id: {1})..." \
+                    .format(file_name, file_to_delete["id"])
 
             timestamp = str(calendar.timegm(datetime.now().utctimetuple()))
-            delete_url = _HTTPSTRING + _SLACKDOMAIN + _SLACKDELETEFILE + timestamp
-            result = requests.post(delete_url, data={
-                "token": _TOKEN,
+            delete_url = slackcfg.http_string + slackcfg.slack_domain + slackcfg.slack_delete_file + timestamp
+            result = send_request_post(slackcfg=slackcfg, request_url=delete_url, request_data={
+                "token": slackcfg.token,
                 "file": file_to_delete["id"],
                 "set_active": "true",
                 "_attempts": "1"})
@@ -121,37 +217,7 @@ def delete_files_on_slack():
             if not op_result:
                 print op_message
 
-def config_check():
-    """
-    this function verifies if the script is confiugured in appropriate way
-    :return:
-    True if all the parameters are ok and False otherwise
-    """
-    def message(parameter_string):
-        """
-        simple function to display error messages
-        :param parameter_string:
-        parameter string to use in error message
-        :return:
-        error string
-        """
-        return "Configure {} parameter in appropriate way.".format(parameter_string)
-    if _AGING <= 1:
-        print message("_AGING")
-        return False
-    if _TOKEN == "":
-        print message("_TOKEN")
-        return False
-    if _SLACKDOMAIN == "":
-        print message("_SLACKDOMAIN")
-        return False
-    if len(_FILETYPE) == 0:
-        print "Deleting all file types."
-    else:
-        print "Deleting select file types: {}".format(_FILETYPE)
-    print "Deleting files older than {} days\n".format(_AGING-1)
-    return True
-
 if __name__ == '__main__':
-    if config_check():
-        delete_files_on_slack()
+    SLACKCONFIG = SlackConfig()
+    if SLACKCONFIG.config_check():
+        delete_files_on_slack(SLACKCONFIG)
